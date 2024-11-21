@@ -1,0 +1,102 @@
+#include "lwip/sockets.h"
+#include "lwip/inet.h"
+#include "lwip/pbuf.h"
+#include <string.h>
+#include <stdio.h>
+#include <time.h>
+
+/* SNTP server and port */
+#define SNTP_SERVER_IP   "129.6.15.28"  // Replace with your SNTP server
+#define SNTP_PORT        123
+
+/* SNTP packet structure */
+#define SNTP_PACKET_SIZE 48
+
+/* SNTP timestamp constants */
+#define NTP_TIMESTAMP_DELTA 2208988800ull  // Seconds from 1900 to 1970
+
+void sntp_request_time() {
+    struct sockaddr_in server_addr;
+    int sock;
+    int bytes_sent, bytes_received;
+    char buffer[SNTP_PACKET_SIZE];
+    struct pbuf *pbuf_send, *pbuf_recv;
+    time_t server_time;
+
+    // Create socket
+    sock = lwip_socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        printf("Failed to create socket\n");
+        return;
+    }
+
+    // Set up server address
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(SNTP_PORT);
+    inet_aton(SNTP_SERVER_IP, &server_addr.sin_addr);
+
+    // Prepare SNTP request packet
+    memset(buffer, 0, SNTP_PACKET_SIZE);
+    buffer[0] = 0x1B;  // LI=0, VN=3, Mode=3 (client)
+
+    // Allocate pbuf for sending
+    pbuf_send = pbuf_alloc(PBUF_TRANSPORT, SNTP_PACKET_SIZE, PBUF_RAM);
+    if (pbuf_send == NULL) {
+        printf("Failed to allocate pbuf for sending\n");
+        lwip_close(sock);
+        return;
+    }
+
+    // Copy data to pbuf
+    memcpy(pbuf_send->payload, buffer, SNTP_PACKET_SIZE);
+
+    // Send SNTP request
+    bytes_sent = lwip_sendto(sock, pbuf_send->payload, pbuf_send->len, 0,
+                             (struct sockaddr *)&server_addr, sizeof(server_addr));
+    pbuf_free(pbuf_send);  // Free pbuf after sending
+
+    if (bytes_sent != SNTP_PACKET_SIZE) {
+        printf("Failed to send SNTP request\n");
+        lwip_close(sock);
+        return;
+    }
+
+    // Allocate pbuf for receiving
+    pbuf_recv = pbuf_alloc(PBUF_TRANSPORT, SNTP_PACKET_SIZE, PBUF_RAM);
+    if (pbuf_recv == NULL) {
+        printf("Failed to allocate pbuf for receiving\n");
+        lwip_close(sock);
+        return;
+    }
+
+    // Receive SNTP response
+    socklen_t server_addr_len = sizeof(server_addr);
+    bytes_received = lwip_recvfrom(sock, pbuf_recv->payload, pbuf_recv->len, 0,
+                                   (struct sockaddr *)&server_addr, &server_addr_len);
+    if (bytes_received < 0) {
+        printf("Failed to receive SNTP response\n");
+        pbuf_free(pbuf_recv);
+        lwip_close(sock);
+        return;
+    }
+
+    // Parse SNTP response
+    if (bytes_received >= SNTP_PACKET_SIZE) {
+        uint32_t seconds_since_1900 = ntohl(*(uint32_t *)(pbuf_recv->payload + 40));
+        server_time = seconds_since_1900 - NTP_TIMESTAMP_DELTA;
+        printf("Time from server: %s", ctime(&server_time));
+    } else {
+        printf("Invalid SNTP response\n");
+    }
+
+    // Free pbuf and close socket
+    pbuf_free(pbuf_recv);
+    lwip_close(sock);
+}
+
+int main() {
+    printf("Requesting time from SNTP server...\n");
+    sntp_request_time();
+    return 0;
+}
